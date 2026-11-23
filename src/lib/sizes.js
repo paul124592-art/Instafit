@@ -9,23 +9,45 @@ export const PRESETS = [
 export const FREE_EXPORTS_PER_DAY = 5
 export const FREE_COMPRESS_PER_DAY = 5
 
-const PREMIUM_KEY = 'instafit_premium'
+const TOKEN_KEY = 'instafit_premium_token'
 const EXPORTS_KEY = 'instafit_exports'
 const COMPRESS_KEY = 'instafit_compresses'
 
+// Premium status is verified by the Supabase backend — never by a flag in
+// localStorage alone. This in-memory value is set only after the server
+// confirms the entitlement (see App.jsx). It starts false on every load.
+let verifiedPremium = false
+
 export function isPremium() {
+  return verifiedPremium
+}
+
+export function setVerifiedPremium(value) {
+  verifiedPremium = !!value
+}
+
+/** The stored Stripe checkout session id that proves a payment. */
+export function getPremiumToken() {
   try {
-    return localStorage.getItem(PREMIUM_KEY) === 'true'
+    return localStorage.getItem(TOKEN_KEY) || ''
   } catch {
-    return false
+    return ''
   }
 }
 
-export function setPremium(value) {
+export function setPremiumToken(token) {
   try {
-    localStorage.setItem(PREMIUM_KEY, value ? 'true' : 'false')
+    if (token) localStorage.setItem(TOKEN_KEY, token)
   } catch {
     // storage unavailable — premium stays off for this session
+  }
+}
+
+export function clearPremiumToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // ignore storage errors
   }
 }
 
