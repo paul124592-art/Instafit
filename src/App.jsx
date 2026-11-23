@@ -1,20 +1,127 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Editor from './components/Editor'
 import Compressor from './components/Compressor'
-import { PRESETS, isPremium as readPremium, makeSamplePhoto, setPremium } from './lib/sizes'
+import {
+  PRESETS,
+  makeSamplePhoto,
+  setVerifiedPremium,
+  getPremiumToken,
+  setPremiumToken,
+  clearPremiumToken,
+} from './lib/sizes'
 
 export default function App() {
   const [image, setImage] = useState(null)
   const [fileName, setFileName] = useState('')
   const [fileSize, setFileSize] = useState(0)
   const [mode, setMode] = useState('resize') // 'resize' | 'compress'
-  const [premium, setPremiumState] = useState(readPremium())
+  // Premium starts locked on every load. It turns on only after the Supabase
+  // backend confirms the entitlement (see the effect below) — never from a
+  // flag stored in the browser alone.
+  const [premium, setPremiumState] = useState(false)
   const [showUpgrade, setShowUpgrade] = useState(false)
   const [error, setError] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef(null)
 
   const paymentLink = import.meta.env.VITE_STRIPE_PAYMENT_LINK
+
+  // Keep the in-memory flag the free-limit helpers read in sync with state.
+  const applyPremium = (value) => {
+    setVerifiedPremium(value)
+    setPremiumState(value)
+  }
+
+  // Verify Premium with the Supabase backend on load.
+  useEffect(() => {
+    // Drop any legacy free-unlock flag left over from the old version.
+    try {
+      localStorage.removeItem('instafit_premium')
+    } catch {
+      // ignore storage errors
+    }
+
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+    // Fail closed: without the backend configured, Premium stays locked and
+    // the app otherwise works normally.
+    if (!supabaseUrl || !anonKey) return
+
+    const endpoint = `${String(supabaseUrl).replace(/\/$/, '')}/functions/v1/premium`
+    const callPremium = async (body) => {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) return null
+      return res.json()
+    }
+
+    const verifySession = async (sessionId) => {
+      try {
+        const data = await callPremium({ action: 'verify', session_id: sessionId })
+        if (data && data.premium === true) {
+          setPremiumToken(sessionId)
+          applyPremium(true)
+          return true
+        }
+      } catch {
+        // network/backend error — fail closed
+      }
+      return false
+    }
+
+    const checkStoredToken = async () => {
+      const token = getPremiumToken()
+      if (!token) return false
+      let data = null
+      try {
+        data = await callPremium({ action: 'check', token })
+      } catch {
+        // network/backend error — fail closed for this load, but keep the
+        // token so a transient failure doesn't wipe a paid entitlement.
+        applyPremium(false)
+        return false
+      }
+      if (data && data.premium === true) {
+        applyPremium(true)
+        return true
+      }
+      if (data && data.premium === false) {
+        // The server positively says this token is no longer entitled
+        // (e.g. subscription cancelled) — drop it.
+        clearPremiumToken()
+      }
+      applyPremium(false)
+      return false
+    }
+
+    const params = new URLSearchParams(window.location.search)
+    const sessionId = params.get('session_id')
+    ;(async () => {
+      if (sessionId) {
+        // Returning from Stripe checkout: verify the payment, then strip the
+        // session id from the URL so a refresh does not re-verify.
+        const verified = await verifySession(sessionId)
+        if (!verified) await checkStoredToken()
+        params.delete('session_id')
+        const next = params.toString()
+        window.history.replaceState(
+          null,
+          '',
+          window.location.pathname + (next ? `?${next}` : '') + window.location.hash,
+        )
+      } else {
+        await checkStoredToken()
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const loadFile = (file) => {
     if (!file) return
@@ -46,12 +153,6 @@ export default function App() {
     img.onload = () => loadImage(img, 'sample-sunset.png', 0)
   }
 
-  const unlockPremium = () => {
-    setPremium(true)
-    setPremiumState(true)
-    setShowUpgrade(false)
-  }
-
   const newPhoto = () => {
     setImage(null)
     setFileName('')
@@ -62,9 +163,10 @@ export default function App() {
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 px-4 py-3">
-          <p className="text-lg font-extrabold">
-            <span className="text-pink-600">▣</span> InstaFit
-          </p>
+          <div className="flex items-center gap-2">
+            <img src="/logo-mark.png" alt="InstaFit logo" className="h-9 w-auto rounded-lg" />
+            <img src="/logo-wordmark.png" alt="InstaFit" className="h-8 w-auto" />
+          </div>
           <div className="flex items-center gap-2">
             <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
               {[
@@ -305,12 +407,9 @@ export default function App() {
             >
               Pay $4/month with Stripe
             </a>
-            <button className="btn-secondary mt-2 w-full" onClick={unlockPremium}>
-              I&apos;ve upgraded — unlock Premium
-            </button>
             <p className="mt-3 text-center text-xs text-slate-400">
-              After paying, come back here and tap &ldquo;I&apos;ve upgraded&rdquo; to unlock
-              Premium on this device.
+              After paying, you&apos;ll be brought back here and Premium unlocks
+              automatically.
             </p>
           </div>
         </div>
